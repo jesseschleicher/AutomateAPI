@@ -70,9 +70,30 @@ function Invoke-AutomateAPIMaster {
 
         # Issue request
         Try {
-            Write-Debug "Calling AutomateAPI with the following arguments:`n$(($Arguments|Out-String -Stream) -join "`n")"
-            $ProgressPreference = 'SilentlyContinue'
-            $Result = Invoke-WebRequest @Arguments
+
+            # Support for undocumented wcc2 routes since it doesn't support body keys like pageSize, page, etc.
+            # and instead uses @odata.nextLink referrals
+            if ($Arguments.URI -like "*/wcc2/api/*") {
+                Write-Debug "Invoke-AutomateAPIMaster: -- /wcc2/api/ route used --"
+                do {
+                    $Response = Invoke-RestMethod @Arguments -MaximumRetryCount 3 -RetryIntervalSec 3
+                    $Result += ($Response).value
+                    $Arguments.URI = ($Response.'@odata.nextLink')
+                    Write-Debug "nextLink: $($Arguments.URI)"
+                } while ($Response.'@odata.nextLink')
+
+                If ($Result.StatusCode -eq 500) {
+                    $Script:CWAIsConnected = $False
+                    Write-Error "Max retries hit. Status: $($Result.StatusCode) $($Result.StatusDescription)"
+                    Return
+                }
+            }
+            else { # default logic 
+                Write-Debug "Calling AutomateAPI with the following arguments:`n$(($Arguments|Out-String -Stream) -join "`n")"
+                $ProgressPreference = 'SilentlyContinue'
+                $Result = Invoke-WebRequest @Arguments
+            }
+            
         } 
         Catch {
             If ($_.Exception.Response) {
@@ -87,7 +108,7 @@ function Invoke-AutomateAPIMaster {
                     $ErrorMessage = @()
 
                     if ($errBody.code) {
-                        $ErrorMessage += "An exception has been thrown."
+                        $ErrorMessage += "An exceaption has been thrown."
                         $ErrorMessage += $_.ScriptStackTrace
                         $ErrorMessage += ''    
                         $ErrorMessage += "--> $($ErrBody.code)"
@@ -118,26 +139,27 @@ function Invoke-AutomateAPIMaster {
             }
         }
 
-        # Not sure this will be hit with current iwr error handling
-        # May need to move to catch block need to find test
-        # TODO Find test for retry
-        # Retry the request
-        $Retry = 0
-        while ($Retry -lt $MaxRetry -and $Result.StatusCode -eq 500) {
-            $Retry++
-            $Wait = $([math]::pow( 2, $Retry))
-            Write-Warning "Issue with request, status: $($Result.StatusCode) $($Result.StatusDescription)"
-            Write-Warning "$($Retry)/$($MaxRetry) retries, waiting $($Wait)ms."
-            Start-Sleep -Milliseconds $Wait
-            $ProgressPreference = 'SilentlyContinue'
-            $Result = Invoke-WebRequest @Arguments
+            # Not sure this will be hit with current iwr error handling
+            # May need to move to catch block need to find test
+            # TODO Find test for retry
+            # Retry the request
+            $Retry = 0
+            while ($Retry -lt $MaxRetry -and $Result.StatusCode -eq 500) {
+                $Retry++
+                $Wait = $([math]::pow( 2, $Retry))
+                Write-Warning "Issue with request, status: $($Result.StatusCode) $($Result.StatusDescription)"
+                Write-Warning "$($Retry)/$($MaxRetry) retries, waiting $($Wait)ms."
+                Start-Sleep -Milliseconds $Wait
+                $ProgressPreference = 'SilentlyContinue'
+                $Result = Invoke-WebRequest @Arguments
+            }
+            If ($Retry -ge $MaxRetry -and $Result.StatusCode -eq 500) {
+                $Script:CWAIsConnected = $False
+                Write-Error "Max retries hit. Status: $($Result.StatusCode) $($Result.StatusDescription)"
+                Return
+            }
         }
-        If ($Retry -ge $MaxRetry -and $Result.StatusCode -eq 500) {
-            $Script:CWAIsConnected = $False
-            Write-Error "Max retries hit. Status: $($Result.StatusCode) $($Result.StatusDescription)"
-            Return
-        }
-    }
+    
     
     End {
         Return $Result

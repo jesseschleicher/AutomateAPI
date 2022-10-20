@@ -85,12 +85,22 @@ function Get-AutomateAPIGeneric {
 
         [Parameter(Mandatory = $false)]
         [string]
-        $Expand
+        $Expand,
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $URI
     )
     
     begin {
         #Build the URI to hit
-        $URI = ('/cwa/api/v1/' + $EndPoint)
+        if ($URI) {
+          # e.g. $URI = ('/wcc2/api/' + $EndPoint)
+          $URI = ($URI + $EndPoint)
+        }
+        else {
+          $URI = ('/cwa/api/v1/' + $EndPoint)
+        }
 
         #Build the Body Up
         $Body = @{}
@@ -139,26 +149,50 @@ function Get-AutomateAPIGeneric {
             'ContentType'="application/json"
             'Body'=$Body
         }
-        If ($AllResults) {$Arguments.Body.page=1}
-        Do {
-            Try {
-                Write-Debug "Calling Invoke-AutomateAPIMaster with Arguments $(ConvertTo-JSON -InputObject $Arguments -Depth 100 -Compress)"
-                $Result = Invoke-AutomateAPIMaster -Arguments $Arguments
-                If ($Result.content){
-                    $Result = $Result.content | ConvertFrom-Json
-                }
-                $ReturnedResults += ($Result)
-            }
-            Catch {
-                Write-Error "Failed to perform Invoke-AutomateAPIMaster"
-                $Result=$Null
-            }
 
-            $Arguments.Body.page+=1
+        # Add support for undocumented wcc2 routes for things like RoleDefinitions (which doesn't support body key/filters like page/pageSize, etc.
+        # but which uses @odata.nextLink referral links instead, which I've handled with conditional code in Invoke-AutomateAPIMaster.
+        if ($Arguments.URI -like "*/wcc2/api/*") { 
+          $Arguments = @{
+            'URI'=$URI
+            'ContentType'="application/json"
+          }
+
+          try {
+            Write-Debug 'Get-AutomateAPIGeneric: wcc2 detected' 
+            Write-Debug "Calling Invoke-AutomateAPIMaster with Arguments $(ConvertTo-JSON -InputObject $Arguments -Depth 100 -Compress)"
+            $Result = Invoke-AutomateAPIMaster -Arguments $Arguments
+            $ReturnedResults += ($Result)  
+          }
+          catch {
+            {1:<#Do this if a terminating exception happens#>}
+            Write-Error "WCC2: Failed to perform Invoke-AutomateAPIMaster"
+            $Result=$Null
+          }
+
         }
-        While ($Result.Count -gt 0 -and $AllResults -and !($ResultSetSize -gt 0 -and $ReturnedResults.Count -ge $ResultSetSize))
-        If ($ResultSetSize -and $ResultSetSize -gt 0) {
-          $ReturnedResults = $ReturnedResults | Select-Object -First $ResultSetSize
+        else { # original cwa route / logic
+          If ($AllResults) {$Arguments.Body.page=1}
+          Do {
+              Try {
+                  Write-Debug "Calling Invoke-AutomateAPIMaster with Arguments $(ConvertTo-JSON -InputObject $Arguments -Depth 100 -Compress)"
+                  $Result = Invoke-AutomateAPIMaster -Arguments $Arguments
+                  If ($Result.content){
+                      $Result = $Result.content | ConvertFrom-Json
+                  }
+                  $ReturnedResults += ($Result)
+              }
+              Catch {
+                  Write-Error "Failed to perform Invoke-AutomateAPIMaster"
+                  $Result=$Null
+              }
+  
+              $Arguments.Body.page+=1
+          }
+          While ($Result.Count -gt 0 -and $AllResults -and !($ResultSetSize -gt 0 -and $ReturnedResults.Count -ge $ResultSetSize))
+          If ($ResultSetSize -and $ResultSetSize -gt 0) {
+            $ReturnedResults = $ReturnedResults | Select-Object -First $ResultSetSize
+          }
         }
     }
     
